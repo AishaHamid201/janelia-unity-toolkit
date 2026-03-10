@@ -4,9 +4,9 @@ using static Janelia.NiDaqMx;
 
 public class TalkToNiDaq_LED_CylinderRotation : MonoBehaviour
 {
-    [Header("Cylinder Reference")]
-    [Tooltip("Drag the GameObject with AnimateCylinderTexture here. If left empty, it will be found automatically.")]
+    [Header("Cylinder Reference (assign one — auto-found if empty)")]
     public AnimateCylinderTexture cylinderTexture;
+    public AnimateCylinderTextureBottomLimit cylinderTextureBottomLimit;
 
     [Header("LED Angle Ranges (0 to 360 degrees)")]
     [Tooltip("LED is ON when the cylinder azimuth falls within any of these ranges. Wrap-around is supported: e.g., from=330 to=30 means 330° through 0° to 30°.")]
@@ -35,13 +35,17 @@ public class TalkToNiDaq_LED_CylinderRotation : MonoBehaviour
 
     private void Start()
     {
-        if (cylinderTexture == null)
+        if (cylinderTexture == null && cylinderTextureBottomLimit == null)
         {
             cylinderTexture = FindObjectOfType<AnimateCylinderTexture>();
             if (cylinderTexture == null)
             {
-                Debug.LogError("TalkToNiDaq_LED_CylinderRotation: No AnimateCylinderTexture found in scene.");
-                return;
+                cylinderTextureBottomLimit = FindObjectOfType<AnimateCylinderTextureBottomLimit>();
+                if (cylinderTextureBottomLimit == null)
+                {
+                    Debug.LogError("TalkToNiDaq_LED_CylinderRotation: No AnimateCylinderTexture or AnimateCylinderTextureBottomLimit found in scene.");
+                    return;
+                }
             }
         }
 
@@ -81,7 +85,7 @@ public class TalkToNiDaq_LED_CylinderRotation : MonoBehaviour
 
     private void Update()
     {
-        if (cylinderTexture == null)
+        if (cylinderTexture == null && cylinderTextureBottomLimit == null)
             return;
 
         // Read NiDaq inputs
@@ -113,7 +117,9 @@ public class TalkToNiDaq_LED_CylinderRotation : MonoBehaviour
         }
 
         // Get cylinder azimuth directly in 0-360
-        float azimuth = cylinderTexture.AzimuthDeg;
+        float azimuth = cylinderTexture != null
+            ? cylinderTexture.AzimuthDeg
+            : cylinderTextureBottomLimit.AzimuthDeg;
 
         // Check if azimuth falls within any LED-ON range (supports wrap-around)
         bool ledOn = false;
