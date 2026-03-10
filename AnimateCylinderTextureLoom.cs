@@ -14,6 +14,18 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
         [Tooltip("Number of complete loom cycles at this rate.")]
         public int numSweeps;
+
+        [Tooltip("Maximum expansion ratio (e.g., 10 = spot appears 10x larger at peak).")]
+        public float maxScaleFactor;
+
+        [Tooltip("If true, loom includes both progressive (expand) and regressive (contract). If false, progressive only.")]
+        public bool includeRegressive;
+
+        [Tooltip("Pause between individual looms at base size (seconds).")]
+        public float interLoomPauseSec;
+
+        [Tooltip("Optional pause at peak expansion before regressive phase (seconds).")]
+        public float peakPauseSec;
     }
 
     [Serializable]
@@ -23,26 +35,13 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
         [Range(0f, 360f)]
         public float azimuthDeg;
 
-        [Tooltip("Loom rates at this position. Each rate runs in sequence.")]
+        [Tooltip("Loom rates at this position. Each rate runs in sequence with its own settings.")]
         public LoomRateConfig[] loomRates;
     }
 
     [Header("Protocol")]
-    [Tooltip("Each position has an azimuth and one or more loom rates with sweep counts. Runs in sequence.")]
+    [Tooltip("Each position has an azimuth and one or more loom rates. Runs in sequence.")]
     public PositionConfig[] positions;
-
-    [Header("Loom Settings")]
-    [Tooltip("Maximum expansion ratio. Spot appears this many times larger at peak (e.g., 10 = 10x bigger).")]
-    public float maxScaleFactor = 10f;
-
-    [Tooltip("If true, each loom includes both progressive (expand) and regressive (contract). If false, progressive only.")]
-    public bool includeRegressive = true;
-
-    [Tooltip("Pause between individual looms at base size (seconds).")]
-    public float interLoomPauseSec = 1f;
-
-    [Tooltip("Optional pause at peak expansion before regressive phase (seconds).")]
-    public float peakPauseSec = 0f;
 
     [Header("Position")]
     [Tooltip("Fixed elevation (y position).")]
@@ -74,18 +73,22 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
     // ---- Internal state ----
     private Material cylinderMaterial;
-    private int posIndex = 0;       // Current position in positions[]
-    private int rateIndex = 0;      // Current rate within positions[posIndex].loomRates[]
-    private int sweepCount = 0;     // Sweeps completed at current rate
+    private int posIndex = 0;
+    private int rateIndex = 0;
+    private int sweepCount = 0;
     private float phaseStartTime;
     private bool finished = false;
     private int _debugFrameCount = 0;
 
     // Current rate derived timing
     private float _currentLOverV;
+    private float _currentMaxScale;
     private float _tc;
     private float _progressiveDuration;
     private float _regressiveDuration;
+    private bool _currentIncludeRegressive;
+    private float _currentInterLoomPause;
+    private float _currentPeakPause;
 
     private enum LoomPhase
     {
@@ -132,7 +135,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
         if (showDebugLog)
         {
-            Debug.Log($"[Loom] Start: {positions?.Length} positions, maxScale={maxScaleFactor}, regressive={includeRegressive}");
+            Debug.Log($"[Loom] Start: {positions?.Length} positions");
             if (positions != null)
             {
                 for (int p = 0; p < positions.Length; p++)
@@ -144,7 +147,10 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
                         {
                             var rate = positions[p].loomRates[r];
                             float lv = rate.l / Mathf.Max(rate.v, 0.0001f);
-                            Debug.Log($"[Loom]     Rate[{r}]: l={rate.l}, v={rate.v}, l/v={lv:F4}s, sweeps={rate.numSweeps}");
+                            float dur = lv * (rate.maxScaleFactor - 1f);
+                            Debug.Log($"[Loom]     Rate[{r}]: l={rate.l}, v={rate.v}, l/v={lv:F4}s, " +
+                                      $"maxScale={rate.maxScaleFactor}, sweeps={rate.numSweeps}, " +
+                                      $"regressive={rate.includeRegressive}, expandDur={dur:F3}s");
                         }
                     }
                 }
@@ -216,7 +222,6 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
         if (elapsed >= blockDurationSeconds)
         {
-            // Start first rate at current position
             rateIndex = 0;
             sweepCount = 0;
             ComputeCurrentRateTiming();
@@ -231,7 +236,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
                 var rate = pos.loomRates[rateIndex];
                 Debug.Log($"[Loom] Block done → Position[{posIndex}]={pos.azimuthDeg}°, " +
                           $"Rate[{rateIndex}]: l={rate.l}, v={rate.v}, l/v={_currentLOverV:F4}s, " +
-                          $"{rate.numSweeps} sweeps, expand duration={_progressiveDuration:F3}s");
+                          $"maxScale={_currentMaxScale}, {rate.numSweeps} sweeps, expandDur={_progressiveDuration:F3}s");
             }
         }
     }
@@ -245,7 +250,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
         // Looming expansion: scale(t) = tc / (tc - t)
         float scale = _tc / (_tc - elapsed);
-        scale = Mathf.Clamp(scale, 1f, maxScaleFactor);
+        scale = Mathf.Clamp(scale, 1f, _currentMaxScale);
         _currentScaleFactor = scale;
 
         ApplyTextureTransform(azimuth, scale);
@@ -254,19 +259,19 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
         {
             var rate = positions[posIndex].loomRates[rateIndex];
             Debug.Log($"[Loom] PROGRESSIVE — pos[{posIndex}]={azimuth}°, rate[{rateIndex}] l/v={_currentLOverV:F4}s, " +
-                      $"sweep {sweepCount + 1}/{rate.numSweeps}, scale={scale:F2}");
+                      $"sweep {sweepCount + 1}/{rate.numSweeps}, scale={scale:F2}/{_currentMaxScale}");
         }
 
         LogState();
 
         if (elapsed >= _progressiveDuration)
         {
-            if (peakPauseSec > 0f)
+            if (_currentPeakPause > 0f)
             {
                 currentPhase = LoomPhase.PeakPause;
                 phaseStartTime = Time.time;
             }
-            else if (includeRegressive)
+            else if (_currentIncludeRegressive)
             {
                 currentPhase = LoomPhase.Regressive;
                 phaseStartTime = Time.time;
@@ -282,14 +287,14 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
     {
         float azimuth = positions[posIndex].azimuthDeg;
         _azimuthDeg = azimuth;
-        _currentScaleFactor = maxScaleFactor;
+        _currentScaleFactor = _currentMaxScale;
         _isLooming = true;
-        ApplyTextureTransform(azimuth, maxScaleFactor);
+        ApplyTextureTransform(azimuth, _currentMaxScale);
         LogState();
 
-        if (elapsed >= peakPauseSec)
+        if (elapsed >= _currentPeakPause)
         {
-            if (includeRegressive)
+            if (_currentIncludeRegressive)
             {
                 currentPhase = LoomPhase.Regressive;
                 phaseStartTime = Time.time;
@@ -308,11 +313,9 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
         _isLooming = true;
 
         // Regressive: time-reversed looming
-        // scale(t) = tc / (tc/maxScaleFactor + t)
-        // At t=0: scale = maxScaleFactor
-        // At t=duration: scale = 1
-        float scale = _tc / (_tc / maxScaleFactor + elapsed);
-        scale = Mathf.Clamp(scale, 1f, maxScaleFactor);
+        // scale(t) = tc / (tc/maxScale + t)
+        float scale = _tc / (_tc / _currentMaxScale + elapsed);
+        scale = Mathf.Clamp(scale, 1f, _currentMaxScale);
         _currentScaleFactor = scale;
 
         ApplyTextureTransform(azimuth, scale);
@@ -333,7 +336,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
         ApplyTextureTransform(azimuth, 1f);
         LogState();
 
-        if (elapsed >= interLoomPauseSec)
+        if (elapsed >= _currentInterLoomPause)
         {
             currentPhase = LoomPhase.Progressive;
             phaseStartTime = Time.time;
@@ -352,7 +355,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
 
         if (sweepCount >= rate.numSweeps)
         {
-            // All sweeps at this rate done — advance to next rate at this position
+            // All sweeps at this rate done — advance to next rate
             rateIndex++;
 
             if (rateIndex >= positions[posIndex].loomRates.Length)
@@ -378,7 +381,7 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
                 return;
             }
 
-            // Next rate at same position — recompute timing, no block between rates
+            // Next rate at same position — recompute timing from the new rate's settings
             sweepCount = 0;
             ComputeCurrentRateTiming();
 
@@ -386,10 +389,10 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
             {
                 var nextRate = positions[posIndex].loomRates[rateIndex];
                 Debug.Log($"[Loom] Next rate[{rateIndex}]: l={nextRate.l}, v={nextRate.v}, l/v={_currentLOverV:F4}s, " +
-                          $"{nextRate.numSweeps} sweeps, expand duration={_progressiveDuration:F3}s");
+                          $"maxScale={_currentMaxScale}, {nextRate.numSweeps} sweeps, expandDur={_progressiveDuration:F3}s");
             }
 
-            // Inter-loom pause before starting the new rate
+            // Use the NEW rate's inter-loom pause for the transition
             currentPhase = LoomPhase.InterLoomPause;
             phaseStartTime = Time.time;
             float azimuth = positions[posIndex].azimuthDeg;
@@ -407,15 +410,19 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
     // ======================== Helpers ========================
 
     /// <summary>
-    /// Compute timing values for the current rate (l/v, tc, durations).
+    /// Reads all settings from the current LoomRateConfig and computes derived timing.
     /// Call whenever rateIndex changes.
     /// </summary>
     private void ComputeCurrentRateTiming()
     {
         var rate = positions[posIndex].loomRates[rateIndex];
         _currentLOverV = rate.l / Mathf.Max(rate.v, 0.0001f);
-        _tc = _currentLOverV * maxScaleFactor;
-        _progressiveDuration = _currentLOverV * (maxScaleFactor - 1f);
+        _currentMaxScale = rate.maxScaleFactor;
+        _currentIncludeRegressive = rate.includeRegressive;
+        _currentInterLoomPause = rate.interLoomPauseSec;
+        _currentPeakPause = rate.peakPauseSec;
+        _tc = _currentLOverV * _currentMaxScale;
+        _progressiveDuration = _currentLOverV * (_currentMaxScale - 1f);
         _regressiveDuration = _progressiveDuration;
     }
 
@@ -435,9 +442,6 @@ public class AnimateCylinderTextureLoom : MonoBehaviour
         cylinderMaterial.SetTextureOffset("_MainTex", new Vector2(offsetX, offsetY));
     }
 
-    /// <summary>
-    /// Resets tiling to (1,1) so other scripts are not affected after protocol ends.
-    /// </summary>
     private void ResetTiling()
     {
         if (cylinderMaterial == null) return;
