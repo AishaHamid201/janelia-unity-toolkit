@@ -7,17 +7,6 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
     [Header("Loom Cylinder Reference (auto-found if empty)")]
     public AnimateCylinderTextureLoom loomTexture;
 
-    [Header("LED Angle Ranges (0 to 360 degrees)")]
-    [Tooltip("LED is ON when the looming spot azimuth falls within any of these ranges. Wrap-around is supported: e.g., from=330 to=30 means 330° through 0° to 30°.")]
-    public AngleRange[] ledOnAngleRanges = new AngleRange[]
-    {
-        new AngleRange { fromDeg = 150f, toDeg = 210f }
-    };
-
-    [Header("LED Loom Phase Filter (optional)")]
-    [Tooltip("If true, LED only triggers when the spot is actively looming (not during block or pause phases).")]
-    public bool onlyDuringLoom = false;
-
     [Header("Debug")]
     public bool showEachWrite = false;
     public bool showEachRead = false;
@@ -28,13 +17,6 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
     private double[] _readData;
     private double[] _writeData;
     private bool odd = true;
-
-    [Serializable]
-    public struct AngleRange
-    {
-        [Range(0f, 360f)] public float fromDeg;
-        [Range(0f, 360f)] public float toDeg;
-    }
 
     private void Start()
     {
@@ -115,44 +97,8 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
             Debug.Log($"tracePD: {_currentLogEntry.tracePD}, imgFrameTrigger: {_currentLogEntry.imgFrameTrigger}, ledTrigger: {_currentLogEntry.ledTrigger}");
         }
 
-        // Get current state from looming texture
-        float azimuth = loomTexture.AzimuthDeg;
-        bool isLooming = loomTexture.IsLooming;
-
-        // Check if azimuth falls within any LED-ON range (supports wrap-around)
-        bool ledOn = false;
-
-        // If onlyDuringLoom is set, skip LED activation when not actively looming
-        if (onlyDuringLoom && !isLooming)
-        {
-            ledOn = false;
-        }
-        else
-        {
-            for (int i = 0; i < ledOnAngleRanges.Length; i++)
-            {
-                float from = ledOnAngleRanges[i].fromDeg;
-                float to = ledOnAngleRanges[i].toDeg;
-                if (from <= to)
-                {
-                    // Normal range: e.g., from=150 to=210
-                    if (azimuth >= from && azimuth <= to)
-                    {
-                        ledOn = true;
-                        break;
-                    }
-                }
-                else
-                {
-                    // Wrap-around range: e.g., from=330 to=30 means 330->360 and 0->30
-                    if (azimuth >= from || azimuth <= to)
-                    {
-                        ledOn = true;
-                        break;
-                    }
-                }
-            }
-        }
+        // LED is ON during block phases, OFF during looming
+        bool ledOn = loomTexture.IsInBlock;
 
         // ao0: toggling photodiode signal
         _writeData[0] = odd ? _outputParams.VoltageMax : _outputParams.VoltageMin;
@@ -163,14 +109,14 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
         double modulator = (_outputParams.VoltageMax - _outputParams.VoltageMin) / 360.0;
         _writeData[1] = rotationY * modulator + _outputParams.VoltageMin;
 
-        // ao2: LED based on looming spot azimuth
+        // ao2: LED — ON during block, OFF during looming
         _writeData[2] = ledOn ? _outputParams.VoltageMax : _outputParams.VoltageMin;
 
         // Log
-        _currentLogEntry.cylinderAzimuth = azimuth;
-        _currentLogEntry.ledState = ledOn ? 1.0 : 0.0;
+        _currentLogEntry.cylinderAzimuth = loomTexture.AzimuthDeg;
         _currentLogEntry.scaleFactor = loomTexture.CurrentScaleFactor;
-        _currentLogEntry.isLooming = isLooming ? 1.0 : 0.0;
+        _currentLogEntry.ledState = ledOn ? 1.0 : 0.0;
+        _currentLogEntry.isInBlock = loomTexture.IsInBlock ? 1.0 : 0.0;
         Janelia.Logger.Log(_currentLogEntry);
 
         // Write outputs to DAQ
@@ -182,7 +128,7 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
         }
         else if (showEachWrite)
         {
-            Debug.Log($"Azimuth: {azimuth:F1}° | Scale: {loomTexture.CurrentScaleFactor:F2}x | LED: {(ledOn ? "ON" : "OFF")} | Write: [{_writeData[0]:F2}, {_writeData[1]:F2}, {_writeData[2]:F2}]");
+            Debug.Log($"Azimuth: {loomTexture.AzimuthDeg:F1}° | Scale: {loomTexture.CurrentScaleFactor:F2}x | Block: {loomTexture.IsInBlock} | LED: {(ledOn ? "ON" : "OFF")}");
         }
     }
 
@@ -216,8 +162,8 @@ public class TalkToNiDaq_LED_Loom : MonoBehaviour
         public double imgFrameTrigger;
         public double ledTrigger;
         public float cylinderAzimuth;
-        public double ledState;
         public float scaleFactor;
-        public double isLooming;
+        public double ledState;
+        public double isInBlock;
     }
 }
