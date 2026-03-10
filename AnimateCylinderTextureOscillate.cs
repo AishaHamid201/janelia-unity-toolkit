@@ -4,8 +4,11 @@ using UnityEngine;
 public class AnimateCylinderTextureOscillate : MonoBehaviour
 {
     [Header("Oscillation Settings")]
-    [Tooltip("Speed of oscillation in degrees per second.")]
-    public float vRotDeg_per_sec = 120f;
+    [Tooltip("Oscillation speeds in degrees per second. Each entry runs in sequence.")]
+    public float[] vRotDeg_per_sec;
+
+    [Tooltip("Number of back-and-forth sweeps for each speed. Must match vRotDeg_per_sec length.")]
+    public int[] sweepRepeatVec;
 
     [Tooltip("Start azimuth of oscillation range (degrees, 0-360).")]
     [Range(0f, 360f)]
@@ -15,14 +18,11 @@ public class AnimateCylinderTextureOscillate : MonoBehaviour
     [Range(0f, 360f)]
     public float oscillateToDeg = 240f;
 
-    [Tooltip("Number of full back-and-forth cycles before stopping. 0 = oscillate forever.")]
-    public int numSweeps = 0;
-
     [Header("Position")]
     [Tooltip("Fixed elevation (y position). No elevation stepping.")]
     public float elevation = 0f;
 
-    [Tooltip("Delay in seconds before oscillation starts.")]
+    [Tooltip("Delay in seconds before each speed block starts.")]
     public float delaySeconds = 0f;
 
     [Header("Debug")]
@@ -33,11 +33,9 @@ public class AnimateCylinderTextureOscillate : MonoBehaviour
     public float AzimuthDeg => _azimuthDeg;
 
     private Material cylinderMaterial;
-    private float startTime;
+    private int vel = 0;                // Current index into vRotDeg_per_sec / sweepRepeatVec
+    private float velStartTime;         // Time when current speed block started
     private bool finished = false;
-    private int completedSweeps = 0;
-    private bool movingForward = true;
-    private bool wasMovingForward = true;
     private int _debugFrameCount = 0;
 
     // Logging
@@ -67,13 +65,13 @@ public class AnimateCylinderTextureOscillate : MonoBehaviour
         Vector2 offset = new Vector2(x, y);
         cylinderMaterial.SetTextureOffset("_MainTex", offset);
 
-        startTime = Time.time;
+        velStartTime = Time.time;
 
         if (showDebugLog)
         {
             Debug.Log($"[AnimateCylinderTextureOscillate] Start: material={(cylinderMaterial != null ? "LOADED" : "NULL")}, " +
-                      $"speed={vRotDeg_per_sec}, from={oscillateFromDeg}°, to={oscillateToDeg}°, " +
-                      $"numSweeps={numSweeps}, elevation={elevation}, delay={delaySeconds}");
+                      $"vRotDeg_per_sec.Length={vRotDeg_per_sec?.Length}, sweepRepeatVec.Length={sweepRepeatVec?.Length}, " +
+                      $"from={oscillateFromDeg}°, to={oscillateToDeg}°, elevation={elevation}, delay={delaySeconds}");
         }
 
         // Log initial values
@@ -86,15 +84,26 @@ public class AnimateCylinderTextureOscillate : MonoBehaviour
     {
         _debugFrameCount++;
 
-        if (finished || cylinderMaterial == null)
+        // Done with all speeds
+        if (vel >= vRotDeg_per_sec.Length || vel >= sweepRepeatVec.Length)
+        {
+            if (!finished && showDebugLog)
+            {
+                Debug.Log("[AnimateCylinderTextureOscillate] FINISHED — all speeds completed");
+                finished = true;
+            }
+            return;
+        }
+
+        if (cylinderMaterial == null)
             return;
 
-        // Wait for delay
-        float elapsed = Time.time - startTime;
+        // Wait for delay before this speed block starts
+        float elapsed = Time.time - velStartTime;
         if (elapsed < delaySeconds)
         {
             if (showDebugLog && _debugFrameCount <= 5)
-                Debug.Log($"[AnimateCylinderTextureOscillate] Frame {_debugFrameCount}: WAITING — elapsed={elapsed:F3}, delay={delaySeconds}");
+                Debug.Log($"[AnimateCylinderTextureOscillate] Frame {_debugFrameCount}: WAITING — vel[{vel}]={vRotDeg_per_sec[vel]}, elapsed={elapsed:F3}, delay={delaySeconds}");
             return;
         }
 
@@ -104,39 +113,41 @@ public class AnimateCylinderTextureOscillate : MonoBehaviour
         if (range < 0.001f)
             return; // No range to oscillate
 
+        float speed = vRotDeg_per_sec[vel];
+        int sweepsForThisSpeed = sweepRepeatVec[vel];
+
+        // Count completed sweeps: one full cycle = forward + backward = 2 * range of travel
+        float totalDegreesTraveled = dTime * speed;
+        int currentSweepCount = Mathf.FloorToInt(totalDegreesTraveled / (2f * range));
+
+        // Check if this speed block is done
+        if (currentSweepCount >= sweepsForThisSpeed)
+        {
+            if (showDebugLog)
+                Debug.Log($"[AnimateCylinderTextureOscillate] Speed {vel} done — {sweepsForThisSpeed} sweeps at {speed} deg/s");
+
+            vel += 1;
+            velStartTime = Time.time;
+
+            // Snap back to start position between speed blocks
+            _azimuthDeg = oscillateFromDeg;
+            float resetX = _azimuthDeg / 360.0f;
+            cylinderMaterial.SetTextureOffset("_MainTex", new Vector2(resetX, elevation));
+            return;
+        }
+
         // PingPong gives a value that goes 0 → range → 0 → range → ...
-        float pingPong = Mathf.PingPong(dTime * vRotDeg_per_sec, range);
+        float pingPong = Mathf.PingPong(totalDegreesTraveled, range);
         _azimuthDeg = oscillateFromDeg + pingPong;
         float x = _azimuthDeg / 360.0f;
         float y = elevation;
-
-        // Track sweep completion by detecting direction changes
-        movingForward = (pingPong < range * 0.5f && dTime * vRotDeg_per_sec > range * 0.5f) ?
-            // Use derivative to determine direction
-            ((dTime * vRotDeg_per_sec) % (2f * range) < range) :
-            ((dTime * vRotDeg_per_sec) % (2f * range) < range);
-
-        // Count sweeps: one full cycle = forward + backward = 2 * range of travel
-        float totalDegreesTraveled = dTime * vRotDeg_per_sec;
-        int currentSweepCount = Mathf.FloorToInt(totalDegreesTraveled / (2f * range));
-
-        if (numSweeps > 0 && currentSweepCount >= numSweeps)
-        {
-            // Snap to start position when done
-            _azimuthDeg = oscillateFromDeg;
-            x = _azimuthDeg / 360.0f;
-            finished = true;
-
-            if (showDebugLog)
-                Debug.Log($"[AnimateCylinderTextureOscillate] FINISHED — completed {numSweeps} sweeps");
-        }
 
         Vector2 offset = new Vector2(x, y);
         cylinderMaterial.SetTextureOffset("_MainTex", offset);
 
         if (showDebugLog && _debugFrameCount <= 10)
         {
-            Debug.Log($"[AnimateCylinderTextureOscillate] Frame {_debugFrameCount}: azimuth={_azimuthDeg:F1}°, x={x:F4}, sweep={currentSweepCount}/{numSweeps}, dTime={dTime:F3}");
+            Debug.Log($"[AnimateCylinderTextureOscillate] Frame {_debugFrameCount}: azimuth={_azimuthDeg:F1}°, vel[{vel}]={speed}, sweep={currentSweepCount}/{sweepsForThisSpeed}, dTime={dTime:F3}");
         }
 
         // Log values
