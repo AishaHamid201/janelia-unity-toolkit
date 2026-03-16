@@ -45,7 +45,7 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
     private float _holdStartTime = 0f;
     private bool _hasTriggeredHoldThisElevation = false;
     private bool _isFirstSweepAtElevation = true;
-    private float _prevAzimuthDeg = 0f;
+    private float _sweepStartAzimuth = 0f;
 
     // Public API
     private float _azimuthDeg;
@@ -93,7 +93,7 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
         cylinderMaterial.SetTextureOffset("_MainTex", offset);
 
         _azimuthDeg = ((x % 1f) + 1f) % 1f * 360f;
-        _prevAzimuthDeg = _azimuthDeg;
+        _sweepStartAzimuth = _azimuthDeg;
         _isFirstSweepAtElevation = true;
         _hasTriggeredHoldThisElevation = false;
         _totalHoldTime = 0f;
@@ -130,6 +130,7 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
             _isFirstSweepAtElevation = true;
             _isHolding = false;
             _isLedOn = false;
+            _sweepStartAzimuth = _azimuthDeg;
             if (vel <= vRotDeg_per_sec.Length)
             {
                 waitTime = Time.time;
@@ -193,6 +194,7 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
                     // Reset hold state for new elevation
                     _hasTriggeredHoldThisElevation = false;
                     _isFirstSweepAtElevation = true;
+                    _sweepStartAzimuth = _azimuthDeg;
 
                     if (showDebugLog)
                         Debug.Log($"[ElevationPause] Elevation change → {elevation:F3}, step={currentStep + 1}");
@@ -214,10 +216,15 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
             // Compute azimuth
             _azimuthDeg = ((x % 1f) + 1f) % 1f * 360f;
 
-            // Check for hold trigger on first forward sweep
+            // Check for hold trigger on first forward sweep using distance-based check.
+            // Measures how far forward the cylinder has rotated from the sweep start
+            // and triggers when it reaches the hold azimuth.
             if (_isFirstSweepAtElevation && !_hasTriggeredHoldThisElevation && rotDir > 0f)
             {
-                if (CrossedAzimuth(_prevAzimuthDeg, _azimuthDeg, holdAtAzimuthDeg))
+                float holdDist = ((holdAtAzimuthDeg - _sweepStartAzimuth) % 360f + 360f) % 360f;
+                float currentDist = ((_azimuthDeg - _sweepStartAzimuth) % 360f + 360f) % 360f;
+
+                if (holdDist > 0f && currentDist >= holdDist)
                 {
                     _isHolding = true;
                     _isLedOn = true;
@@ -231,8 +238,6 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
                         Debug.Log($"[ElevationPause] HOLD triggered at {holdAtAzimuthDeg}°, elevation={elevation:F3}, vel[{vel}]={vRotDeg_per_sec[vel]}, LED ON for {ledOnHoldSeconds}s then OFF for {ledOffHoldSeconds}s");
                 }
             }
-
-            _prevAzimuthDeg = _azimuthDeg;
 
             float y = elevation;
             Vector2 offset = new Vector2(x, y);
@@ -260,21 +265,4 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Detects if azimuth crossed the target degree between two frames (forward rotation).
-    /// Handles wrap-around at 360°/0°.
-    /// </summary>
-    private bool CrossedAzimuth(float prevDeg, float currDeg, float targetDeg)
-    {
-        if (prevDeg <= currDeg)
-        {
-            // No wrap: simple range check
-            return prevDeg < targetDeg && currDeg >= targetDeg;
-        }
-        else
-        {
-            // Wrapped around 360→0: target crossed if in [prev,360) or [0,curr]
-            return prevDeg < targetDeg || currDeg >= targetDeg;
-        }
-    }
 }
