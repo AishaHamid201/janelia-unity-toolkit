@@ -15,13 +15,16 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
     public float offsetEl = 0.1f;
     public float maxEl = 1.0f;
 
-    [Header("Pause Settings (first sweep per elevation)")]
-    [Tooltip("Azimuth where the cylinder pauses on the first sweep (degrees, 0-360). Set this to the toDeg of your LED range.")]
+    [Header("Hold Settings (first sweep per elevation)")]
+    [Tooltip("Azimuth where the cylinder holds on the first sweep (degrees, 0-360).")]
     [Range(0f, 360f)]
-    public float pauseAtAzimuthDeg = 30f;
+    public float holdAtAzimuthDeg = 20f;
 
-    [Tooltip("How long the cylinder pauses at the pause azimuth (seconds).")]
-    public float pauseDurationSeconds = 10f;
+    [Tooltip("LED ON hold duration — cylinder stops, LED is ON for this many seconds.")]
+    public float ledOnHoldSeconds = 5f;
+
+    [Tooltip("LED OFF hold duration — after LED turns OFF, cylinder stays stopped for this many more seconds before resuming.")]
+    public float ledOffHoldSeconds = 10f;
 
     [Header("Debug")]
     public bool showDebugLog = false;
@@ -35,18 +38,20 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
     private float waitTime = 0;
     private int _debugFrameCount = 0;
 
-    // Pause state
-    private float _totalPauseTime = 0f;
-    private bool _isPaused = false;
-    private float _pauseStartTime = 0f;
-    private bool _hasTriggeredPauseThisElevation = false;
+    // Hold state
+    private float _totalHoldTime = 0f;
+    private bool _isHolding = false;
+    private bool _isLedOn = false;
+    private float _holdStartTime = 0f;
+    private bool _hasTriggeredHoldThisElevation = false;
     private bool _isFirstSweepAtElevation = true;
     private float _prevAzimuthDeg = 0f;
 
     // Public API
     private float _azimuthDeg;
     public float AzimuthDeg => _azimuthDeg;
-    public bool IsPaused => _isPaused;
+    public bool IsHolding => _isHolding;
+    public bool IsLedOn => _isLedOn;
     public bool IsFirstSweepAtElevation => _isFirstSweepAtElevation;
 
     // Logging
@@ -55,7 +60,8 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
     {
         public float xpos;
         public float ypos;
-        public int isPaused;
+        public int isHolding;
+        public int isLedOn;
         public int isFirstSweep;
     };
 
@@ -75,7 +81,7 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
             Debug.Log($"[ElevationPause] Start: material={(cylinderMaterial != null ? "LOADED" : "NULL")}, " +
                       $"vRotDeg_per_sec.Length={vRotDeg_per_sec?.Length}, sweepRepeatVec.Length={sweepRepeatVec?.Length}, " +
                       $"delaySeconds={delaySeconds}, offsetTex={offsetTex}, numElevationSteps={numElevationSteps}, " +
-                      $"offsetEl={offsetEl}, maxEl={maxEl}, pauseAt={pauseAtAzimuthDeg}°, pauseDuration={pauseDurationSeconds}s");
+                      $"offsetEl={offsetEl}, maxEl={maxEl}, holdAt={holdAtAzimuthDeg}°, ledOn={ledOnHoldSeconds}s, ledOff={ledOffHoldSeconds}s");
         }
 
         // Reset texture based on offset
@@ -89,12 +95,13 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
         _azimuthDeg = ((x % 1f) + 1f) % 1f * 360f;
         _prevAzimuthDeg = _azimuthDeg;
         _isFirstSweepAtElevation = true;
-        _hasTriggeredPauseThisElevation = false;
-        _totalPauseTime = 0f;
+        _hasTriggeredHoldThisElevation = false;
+        _totalHoldTime = 0f;
 
         _currentLogEntry.xpos = x;
         _currentLogEntry.ypos = y;
-        _currentLogEntry.isPaused = 0;
+        _currentLogEntry.isHolding = 0;
+        _currentLogEntry.isLedOn = 0;
         _currentLogEntry.isFirstSweep = 1;
         Janelia.Logger.Log(_currentLogEntry);
     }
@@ -117,11 +124,12 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
             vel += 1;
             currentStep = 1;
             elevation = offsetEl;
-            // Reset pause state for new velocity
-            _totalPauseTime = 0f;
-            _hasTriggeredPauseThisElevation = false;
+            // Reset hold state for new velocity
+            _totalHoldTime = 0f;
+            _hasTriggeredHoldThisElevation = false;
             _isFirstSweepAtElevation = true;
-            _isPaused = false;
+            _isHolding = false;
+            _isLedOn = false;
             if (vel <= vRotDeg_per_sec.Length)
             {
                 waitTime = Time.time;
@@ -130,32 +138,47 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
 
         if (cylinderMaterial & Time.time >= (waitTime + delaySeconds))
         {
-            // Handle active pause
-            if (_isPaused)
+            // Handle active hold (two phases: LED ON then LED OFF)
+            if (_isHolding)
             {
-                float pauseElapsed = Time.time - _pauseStartTime;
-                if (pauseElapsed >= pauseDurationSeconds)
+                float holdElapsed = Time.time - _holdStartTime;
+                float totalHoldDuration = ledOnHoldSeconds + ledOffHoldSeconds;
+
+                if (holdElapsed < ledOnHoldSeconds)
                 {
-                    // Pause ended
-                    _totalPauseTime += pauseDurationSeconds;
-                    _isPaused = false;
-                    if (showDebugLog)
-                        Debug.Log($"[ElevationPause] Pause ended — totalPauseTime={_totalPauseTime:F2}s, resuming rotation");
+                    // Phase 1: LED ON
+                    _isLedOn = true;
+                }
+                else if (holdElapsed < totalHoldDuration)
+                {
+                    // Phase 2: LED OFF, still holding
+                    _isLedOn = false;
                 }
                 else
                 {
-                    // Still paused — keep texture frozen, log state
-                    _currentLogEntry.xpos = pauseAtAzimuthDeg / 360f;
+                    // Hold ended — resume rotation
+                    _totalHoldTime += totalHoldDuration;
+                    _isHolding = false;
+                    _isLedOn = false;
+                    if (showDebugLog)
+                        Debug.Log($"[ElevationPause] Hold ended — totalHoldTime={_totalHoldTime:F2}s, resuming rotation");
+                }
+
+                if (_isHolding)
+                {
+                    // Still holding — keep texture frozen, log state
+                    _currentLogEntry.xpos = holdAtAzimuthDeg / 360f;
                     _currentLogEntry.ypos = elevation;
-                    _currentLogEntry.isPaused = 1;
+                    _currentLogEntry.isHolding = 1;
+                    _currentLogEntry.isLedOn = _isLedOn ? 1 : 0;
                     _currentLogEntry.isFirstSweep = _isFirstSweepAtElevation ? 1 : 0;
                     Janelia.Logger.Log(_currentLogEntry);
                     return;
                 }
             }
 
-            // Compute position with pause-adjusted time
-            float dTime = Time.time - (waitTime + delaySeconds) - _totalPauseTime;
+            // Compute position with hold-adjusted time
+            float dTime = Time.time - (waitTime + delaySeconds) - _totalHoldTime;
 
             float x = offsetTex / 360.0f + dTime * rotDir * (vRotDeg_per_sec[vel] / 360.0f) % 1;
 
@@ -167,8 +190,8 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
                     // All repeats at this elevation done — change elevation
                     elevation += (maxEl - offsetEl) / numElevationSteps;
                     rotDir = 1.0f;
-                    // Reset pause state for new elevation
-                    _hasTriggeredPauseThisElevation = false;
+                    // Reset hold state for new elevation
+                    _hasTriggeredHoldThisElevation = false;
                     _isFirstSweepAtElevation = true;
 
                     if (showDebugLog)
@@ -191,20 +214,21 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
             // Compute azimuth
             _azimuthDeg = ((x % 1f) + 1f) % 1f * 360f;
 
-            // Check for pause trigger on first forward sweep
-            if (_isFirstSweepAtElevation && !_hasTriggeredPauseThisElevation && rotDir > 0f)
+            // Check for hold trigger on first forward sweep
+            if (_isFirstSweepAtElevation && !_hasTriggeredHoldThisElevation && rotDir > 0f)
             {
-                if (CrossedAzimuth(_prevAzimuthDeg, _azimuthDeg, pauseAtAzimuthDeg))
+                if (CrossedAzimuth(_prevAzimuthDeg, _azimuthDeg, holdAtAzimuthDeg))
                 {
-                    _isPaused = true;
-                    _pauseStartTime = Time.time;
-                    _hasTriggeredPauseThisElevation = true;
-                    // Snap to exact pause position
-                    x = pauseAtAzimuthDeg / 360f;
-                    _azimuthDeg = pauseAtAzimuthDeg;
+                    _isHolding = true;
+                    _isLedOn = true;
+                    _holdStartTime = Time.time;
+                    _hasTriggeredHoldThisElevation = true;
+                    // Snap to exact hold position
+                    x = holdAtAzimuthDeg / 360f;
+                    _azimuthDeg = holdAtAzimuthDeg;
 
                     if (showDebugLog)
-                        Debug.Log($"[ElevationPause] PAUSE triggered at {pauseAtAzimuthDeg}°, elevation={elevation:F3}, vel[{vel}]={vRotDeg_per_sec[vel]}");
+                        Debug.Log($"[ElevationPause] HOLD triggered at {holdAtAzimuthDeg}°, elevation={elevation:F3}, vel[{vel}]={vRotDeg_per_sec[vel]}, LED ON for {ledOnHoldSeconds}s then OFF for {ledOffHoldSeconds}s");
                 }
             }
 
@@ -220,11 +244,12 @@ public class AnimateCylinderTextureElevationPause : MonoBehaviour
 
                 if (showDebugLog && _debugFrameCount <= 10)
                     Debug.Log($"[ElevationPause] Frame {_debugFrameCount}: x={x:F4}, y={y:F4}, azimuth={_azimuthDeg:F1}°, " +
-                              $"vel[{vel}]={vRotDeg_per_sec[vel]}, step={currentStep}, firstSweep={_isFirstSweepAtElevation}, paused={_isPaused}");
+                              $"vel[{vel}]={vRotDeg_per_sec[vel]}, step={currentStep}, firstSweep={_isFirstSweepAtElevation}, holding={_isHolding}, ledOn={_isLedOn}");
 
                 _currentLogEntry.xpos = x;
                 _currentLogEntry.ypos = y;
-                _currentLogEntry.isPaused = _isPaused ? 1 : 0;
+                _currentLogEntry.isHolding = _isHolding ? 1 : 0;
+                _currentLogEntry.isLedOn = _isLedOn ? 1 : 0;
                 _currentLogEntry.isFirstSweep = _isFirstSweepAtElevation ? 1 : 0;
                 Janelia.Logger.Log(_currentLogEntry);
             }

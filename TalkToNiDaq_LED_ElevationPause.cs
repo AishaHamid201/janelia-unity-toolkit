@@ -7,13 +7,6 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
     [Header("Cylinder Reference (auto-found if empty)")]
     public AnimateCylinderTextureElevationPause cylinderTexture;
 
-    [Header("LED Angle Ranges (0 to 360 degrees)")]
-    [Tooltip("LED is ON when the cylinder azimuth falls within any of these ranges, but ONLY during the first sweep at each elevation and NOT during the pause.")]
-    public AngleRange[] ledOnAngleRanges = new AngleRange[]
-    {
-        new AngleRange { fromDeg = 330f, toDeg = 30f }
-    };
-
     [Header("Debug")]
     public bool showEachWrite = false;
     public bool showEachRead = false;
@@ -24,13 +17,6 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
     private double[] _readData;
     private double[] _writeData;
     private bool odd = true;
-
-    [Serializable]
-    public struct AngleRange
-    {
-        [Range(0f, 360f)] public float fromDeg;
-        [Range(0f, 360f)] public float toDeg;
-    }
 
     private void Start()
     {
@@ -111,38 +97,11 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
             Debug.Log($"tracePD: {_currentLogEntry.tracePD}, imgFrameTrigger: {_currentLogEntry.imgFrameTrigger}, ledTrigger: {_currentLogEntry.ledTrigger}");
         }
 
-        // Get state from the animation script
+        // LED state is fully controlled by the animation script's two-phase hold
         float azimuth = cylinderTexture.AzimuthDeg;
         bool isFirstSweep = cylinderTexture.IsFirstSweepAtElevation;
-        bool isPaused = cylinderTexture.IsPaused;
-
-        // LED is ON only during the first sweep, NOT during the pause, AND azimuth in range
-        bool ledOn = false;
-        if (isFirstSweep && !isPaused)
-        {
-            for (int i = 0; i < ledOnAngleRanges.Length; i++)
-            {
-                float from = ledOnAngleRanges[i].fromDeg;
-                float to = ledOnAngleRanges[i].toDeg;
-                if (from <= to)
-                {
-                    if (azimuth >= from && azimuth <= to)
-                    {
-                        ledOn = true;
-                        break;
-                    }
-                }
-                else
-                {
-                    // Wrap-around range: e.g., from=330 to=30 means 330->360 and 0->30
-                    if (azimuth >= from || azimuth <= to)
-                    {
-                        ledOn = true;
-                        break;
-                    }
-                }
-            }
-        }
+        bool isHolding = cylinderTexture.IsHolding;
+        bool ledOn = cylinderTexture.IsLedOn;
 
         // ao0: toggling photodiode signal
         _writeData[0] = odd ? _outputParams.VoltageMax : _outputParams.VoltageMin;
@@ -153,14 +112,14 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
         double modulator = (_outputParams.VoltageMax - _outputParams.VoltageMin) / 360.0;
         _writeData[1] = rotationY * modulator + _outputParams.VoltageMin;
 
-        // ao2: LED — ON only during first sweep in LED range, OFF otherwise
+        // ao2: LED — driven by animation script's hold phase
         _writeData[2] = ledOn ? _outputParams.VoltageMax : _outputParams.VoltageMin;
 
         // Log
         _currentLogEntry.cylinderAzimuth = azimuth;
         _currentLogEntry.ledState = ledOn ? 1.0 : 0.0;
         _currentLogEntry.isFirstSweep = isFirstSweep ? 1.0 : 0.0;
-        _currentLogEntry.isPaused = isPaused ? 1.0 : 0.0;
+        _currentLogEntry.isHolding = isHolding ? 1.0 : 0.0;
         Janelia.Logger.Log(_currentLogEntry);
 
         // Write outputs to DAQ
@@ -172,7 +131,7 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
         }
         else if (showEachWrite)
         {
-            Debug.Log($"Azimuth: {azimuth:F1}° | FirstSweep: {isFirstSweep} | Paused: {isPaused} | LED: {(ledOn ? "ON" : "OFF")}");
+            Debug.Log($"Azimuth: {azimuth:F1}° | FirstSweep: {isFirstSweep} | Holding: {isHolding} | LED: {(ledOn ? "ON" : "OFF")}");
         }
     }
 
@@ -208,6 +167,6 @@ public class TalkToNiDaq_LED_ElevationPause : MonoBehaviour
         public float cylinderAzimuth;
         public double ledState;
         public double isFirstSweep;
-        public double isPaused;
+        public double isHolding;
     }
 }
